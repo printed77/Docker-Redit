@@ -1,6 +1,7 @@
 一、安裝Docker 和 Docker Compose 的環境、安裝yum-utils 套件管理工具
 新增編輯腳本測試能否正常運行(cd /home/bradlin) ：sudo vi abc.sh
 執行安裝 ：sudo bash abc.sh
+
 安裝腳本(Ubuntu版)：
 # 安裝必要工具
 sudo apt update
@@ -70,6 +71,7 @@ sudo mv /usr/share/elasticsearch/config/certs/* /opt/elasticsearch/ssl/
 # 將擁有者改為 UID 1000 (Elasticsearch 使用者)
 sudo chown -R 1000:1000 /opt/elasticsearch/ssl
  # 設定檔案權限：目錄 750，檔案 640 (私鑰不該被公開讀取) sudo chmod 750 /opt/elasticsearch/ssl sudo chmod 640 /opt/elasticsearch/ssl/*
+
 三、設置docker-compose.yml(cd /opt/sre_tools/)
 version: '3.8'
 
@@ -148,9 +150,6 @@ services:
     restart: always
     depends_on:
       - es01
-
-
-
 
 四、
 1. 刪除錯誤建立的資料夾
@@ -239,6 +238,7 @@ YAML
     restart: always
     depends_on:
       - es01
+
 額外前置步驟 (重要)
 在您啟動容器之前，請在宿主機上執行以下操作：
 建立 pipelines.yml 檔案並寫入內容：
@@ -263,6 +263,7 @@ sudo chown 1000:1000 /opt/logstash/pipeline/logstash_docker.conf
 
 
 完成以上修改後，執行 sudo docker compose up -d 即可。
+
 2. logstash.yml 內容修改建議
 您提供的配置內容是有效的，但它與您目前在 docker-compose.yml 中使用的環境變數（例如 LS_JAVA_OPTS）和安全設定是分開的。
 為了確保您的安全監控功能正常，建議在 /opt/logstash/conf/logstash.yml 檔案中包含以下內容：
