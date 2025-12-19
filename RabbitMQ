@@ -1,6 +1,7 @@
 一、安裝Docker 和 Docker Compose 的環境、安裝yum-utils 套件管理工具
 新增編輯腳本測試能否正常運行(cd /home/bradlin) ：sudo vi abc.sh
 執行安裝 ：sudo bash abc.sh
+
 安裝腳本(Ubuntu版)：
 # 安裝必要工具
 sudo apt update
@@ -37,6 +38,7 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl restart docker
 sudo systemctl enable
+
 二、變更名稱(cd /opt/sre_tools/路徑底下)
 cd /opt/
 sudo mkdir sre_tools
@@ -44,8 +46,10 @@ cd /opt/sre_tools/
 查詢名稱：hostname
 變更名稱：sudo vi .env
 cHostname=""
+
 三、自動新增資料夾：sudo mkdir -p /opt/rabbitmq/data
 (cat /opt/rabbitmq/data)
+
 四、產生一組 Erlang Cookie，並存為 .erlang.cookie
 在此路徑：cd /opt/rabbitmq/data/
 這個命令會以 root 權限將 Cookie 內容寫入目標路徑：
