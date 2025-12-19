@@ -1,0 +1,196 @@
+一、安裝Docker 和 Docker Compose 的環境、安裝yum-utils 套件管理工具
+新增編輯腳本測試能否正常運行(cd /home/bradlin) ：sudo vi abc.sh
+執行安裝 ：sudo bash abc.sh
+安裝腳本(Ubuntu版)：
+# 安裝必要工具
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg
+
+# 新增 Docker GPG 金鑰
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+# 新增 Docker APT 套件來源
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# 安裝 Docker 套件
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# 設定 Docker log rotation
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json > /dev/null <<EOF
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "5"
+  }
+}
+EOF
+
+# 重新載入並啟動 Docker
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+sudo systemctl enable
+二、變更名稱(cd /opt/sre_tools/路徑底下)
+sudo mkdir sre_tools
+cd /opt/sre_tools
+查詢名稱：hostname
+變更名稱：sudo vi .env
+cHostname=""
+
+自動新增資料夾：sudo mkdir -p /opt/redis/conf
+(cat /opt/redis/conf/redis.conf)
+自動新增資料夾：sudo mkdir -p /opt/redis/data
+(cat /opt/redis/data)
+自動新增資料夾：sudo mkdir -p /opt/redis_sentinel/conf
+所有人：sudo chmod -R 777 /opt/redis_sentinel/
+
+三、設置docker-compose.yml(cd /opt/sre_tools/)
+sudo vi docker-compose.yml 安裝套件如下：
+version: '3'
+
+networks:
+  monitoring:
+    driver: bridge
+
+services:
+  redis:
+    image: redis:7.2.9
+    container_name: ${cHostname}-redis
+    hostname: ${cHostname}-redis
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - /opt/redis/data:/data
+      - /opt/redis/conf/redis.conf:/usr/local/etc/redis/redis.conf
+    restart: always
+	
+  sentinel:
+    image: redis:7.2.9
+    container_name: ${cHostname}-sentinel
+    hostname: ${cHostname}-sentinel
+    command: ["redis-server", "/usr/local/etc/redis/sentinel.conf", "--sentinel"]
+    ports:
+      - "26379:26379"
+    network_mode: host
+    volumes:
+      - /opt/redis_sentinel/conf/:/usr/local/etc/redis/
+    restart: always
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.44.0
+    container_name: ${cHostname}-redis_exporter
+    ports:
+      - "9121:9121"
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    depends_on:
+      - redis
+    restart: always
+
+  node-exporter:
+    image: prom/node-exporter:v1.3.1
+    container_name: ${cHostname}-node-exporter
+    hostname: ${cHostname}-nodeExporter
+    restart: always
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - 9100:9100
+    networks:
+      - monitoring
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor
+    container_name: ${cHostname}-cadvisor
+    hostname: ${cHostname}-cadvisor
+    restart: always
+    ports:
+      - 8080:8080
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - monitoring
+
+四、設置redis/redis-xxxxx.conf (cat /opt/redis/conf/redis.conf)
+cd /opt/redis/conf/
+sudo vi redis.conf
+(master)
+bind 0.0.0.0
+port 6379
+protected-mode no
+appendonly yes
+
+# 設定密碼
+# masterauth <PWD>
+# requirepass <PWD>
+
+
+
+(slave)
+bind 0.0.0.0
+port 6379
+protected-mode no
+appendonly yes
+replicaof <MASTER IP> 6379
+
+# 設定密碼
+# masterauth <PWD>
+# requirepass <PWD>
+
+(sentinel)   cd  /opt/redis_sentinel/conf
+sudo vi sentinel.conf
+port 26379
+dir /tmp
+sentinel monitor mymaster <MASTER_IP> 6379 2
+sentinel announce-ip <ip>
+sentinel announce-port 26379
+sentinel down-after-milliseconds mymaster 5000
+sentinel parallel-syncs mymaster 1
+sentinel failover-timeout mymaster 10000
+# sentinel notification-script mymaster /usr/local/etc/redis/alert.sh
+# 連redis master密碼
+# sentinel auth-pass mymaster <PWD>
+# 設定連線sentinel密碼
+# requirepass <PWD>
+
+
+
+關閉Docker：sudo docker compose down
+啟用Docker：sudo docker compose up -d
+
+確認Docker啟用狀態：sudo docker ps -a
+
+檢查docker：sudo docker logs 1d(ID開頭)
+
+
+進Docker檢查是否cluster：sudo docker exec -it 9 /bin/bash
+查看地2台slave是否連上：redis-cli
+查看資訊：info
+
+
+故障排除：
+所有人：sudo chmod -R 777 /opt/redis_sentinel/
+ sentinel關閉：sudo docker compose down sentinel
+sentinel測試：redis-cli -p 26379
+
+
+
