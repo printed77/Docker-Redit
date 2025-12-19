@@ -1,0 +1,24 @@
+version: '3'
+services:
+  redis:
+    image: redis:8.0.3
+    container_name: ${cHostname}-redis
+    hostname: ${cHostname}-redis
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - /opt/redis/data:/data
+      - /opt/redis/conf/redis.conf:/usr/local/etc/redis/redis.conf
+    restart: always
+
+  sentinel:
+    image: redis:8.0.3
+    container_name: ${cHostname}-sentinel
+    hostname: ${cHostname}-sentinel
+    command: ["redis-server", "/usr/local/etc/redis/sentinel.conf", "--sentinel"]
+    ports:
+      - "26379:26379"
+    volumes:
+      - /opt/redis_sentinel/conf/:/usr/local/etc/redis/
+    restart: always
