@@ -1,0 +1,312 @@
+一、安裝Docker 和 Docker Compose 的環境、安裝yum-utils 套件管理工具
+新增編輯腳本測試能否正常運行(cd /home/bradlin) ：sudo vi abc.sh
+執行安裝 ：sudo bash abc.sh
+安裝腳本(Ubuntu版)：
+# 安裝必要工具
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg
+
+# 新增 Docker GPG 金鑰
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+# 新增 Docker APT 套件來源
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# 安裝 Docker 套件
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# 設定 Docker log rotation
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json > /dev/null <<EOF
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "5"
+  }
+}
+EOF
+
+# 重新載入並啟動 Docker
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+sudo systemctl enable
+
+
+二、變更名稱(cd /opt/sre_tools/路徑底下)
+查詢名稱：hostname
+變更名稱：sudo vi .env
+cHostname=""
+
+
+自動新增資料夾：sudo mkdir -p /opt/elasticsearch/conf
+
+自動新增資料夾：sudo mkdir -p /opt/elasticsearch/data
+自動新增資料夾：sudo mkdir -p /opt/elasticsearch/ssl
+自動新增資料夾：sudo mkdir -p /opt/logstash/conf
+ 修正權限 (這是最常被遺漏的一步)
+您是用 sudo vi 建立的，所以檔案擁有者是 root。Docker 內的 Elasticsearch (UID 1000) 無法讀取 root 擁有的私鑰，會報錯 Permission denied。
+請執行：
+Bash
+# 修改擁有者為 UID 1000
+sudo chown -R 1000:1000 /opt/elasticsearch/ssl
+
+# 設定權限 (目錄 750, 檔案 640)
+sudo chmod 750 /opt/elasticsearch/ssl
+sudo chmod 640 /opt/elasticsearch/ssl/*
+
+2. 移動檔案
+將您剛剛建立的檔案移動過去：
+sudo mv /usr/share/elasticsearch/config/certs/* /opt/elasticsearch/ssl/
+
+
+自動新增資料夾：sudo mkdir -p /opt/logstash/pipeline
+# 將擁有者改為 UID 1000 (Elasticsearch 使用者)
+sudo chown -R 1000:1000 /opt/elasticsearch/ssl
+ # 設定檔案權限：目錄 750，檔案 640 (私鑰不該被公開讀取) sudo chmod 750 /opt/elasticsearch/ssl sudo chmod 640 /opt/elasticsearch/ssl/*
+三、設置docker-compose.yml(cd /opt/sre_tools/)
+version: '3.8'
+
+services:
+  es01:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    container_name: ${cHostname}-es01
+    user: "1000:1000"
+    environment:
+      - node.name=es01
+      - cluster.name=es-docker-cluster
+      - discovery.seed_hosts=es01
+      - cluster.initial_master_nodes=es01
+      - bootstrap.memory_lock=true
+      # --- SSL 設定 (對應檔案名稱) ---
+      - xpack.security.enabled=true
+      - xpack.security.transport.ssl.enabled=true
+      - xpack.security.http.ssl.enabled=true
+      - xpack.security.http.ssl.verification_mode=certificate
+      - xpack.security.transport.ssl.verification_mode=certificate
+      - xpack.security.http.ssl.key=/usr/share/elasticsearch/config/certs/key.pem
+      - xpack.security.http.ssl.certificate=/usr/share/elasticsearch/config/certs/cert.pem
+      - xpack.security.http.ssl.certificate_authorities=/usr/share/elasticsearch/config/certs/ca.crt
+      - xpack.security.transport.ssl.key=/usr/share/elasticsearch/config/certs/key.pem
+      - xpack.security.transport.ssl.certificate=/usr/share/elasticsearch/config/certs/cert.pem
+      - xpack.security.transport.ssl.certificate_authorities=/usr/share/elasticsearch/config/certs/ca.crt
+      - ELASTIC_PASSWORD=1qw2!QW@
+      - network.host=0.0.0.0
+      - ES_JAVA_OPTS=-Xms4g -Xmx4g
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - /opt/elasticsearch/data:/usr/share/elasticsearch/data
+      # 這裡掛載宿主機的 ssl 資料夾
+      - /opt/elasticsearch/ssl:/usr/share/elasticsearch/config/certs
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    restart: always
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.12.0
+    container_name: ${cHostname}-kibana
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=https://es01:9200
+      # 初次安裝建議先用 elastic 超級管理員登入，避免 kibana_system 權限問題
+      - ELASTICSEARCH_USERNAME=elastic
+      - ELASTICSEARCH_PASSWORD=1qw2!QW@
+      - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=/usr/share/kibana/config/certs/ca.crt
+      - ELASTICSEARCH_SSL_VERIFICATIONMODE=none
+    volumes:
+      # Kibana 也要掛載同一個 ssl 資料夾才能讀取 ca.crt
+      - /opt/elasticsearch/ssl:/usr/share/kibana/config/certs
+    restart: always
+    depends_on:
+      - es01
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.12.0
+    container_name: ${cHostname}-logstash
+    ports:
+      - "5044:5044"
+      - "5000:5000"
+      - "9600:9600"
+    environment:
+      LS_JAVA_OPTS: "-Xmx512m -Xms512m"
+    volumes:
+      - /opt/logstash/conf/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - /opt/logstash/pipeline:/usr/share/logstash/pipeline:ro
+      # 修正：Logstash 也統一掛載 ssl 資料夾
+      - /opt/elasticsearch/ssl:/usr/share/logstash/config/certs:ro
+    restart: always
+    depends_on:
+      - es01
+
+
+
+
+四、
+1. 刪除錯誤建立的資料夾
+首先，必須把那個被 Docker 錯誤建立成資料夾的 logstash.yml 刪掉。
+Bash
+sudo rm -rf /opt/logstash/conf/logstash.yml
+2. 建立正確的檔案
+手動建立該檔案，確保它是「檔案」。
+Bash
+# 確保目錄存在
+sudo mkdir -p /opt/logstash/conf
+
+# 建立空檔案
+sudo touch /opt/logstash/conf/logstash.yml
+3. 寫入 Logstash 設定 (必要)
+因為您啟用了 X-Pack Security (SSL/帳號密碼)，Logstash 需要設定檔才能連線回 Elasticsearch 進行自我監控，否則啟動後可能會一直報錯。
+編輯檔案：
+Bash
+sudo vi /opt/logstash/conf/logstash.yml
+貼上以下內容（注意：這裡暫時使用 elastic 帳號以確保能跑通，生產環境建議改用 logstash_system）：
+YAML
+http.host: "0.0.0.0"
+xpack.monitoring.enabled: true
+xpack.monitoring.elasticsearch.hosts: [ "https://es01:9200" ]
+xpack.monitoring.elasticsearch.username: "elastic"
+xpack.monitoring.elasticsearch.password: "1qw2!QW@"
+xpack.monitoring.elasticsearch.ssl.certificate_authority: "/usr/share/logstash/config/certs/ca.crt"
+xpack.monitoring.elasticsearch.ssl.verification_mode: none
+
+5. 修正權限 (非常重要)
+最後，把這些檔案的權限交給容器內的 UID 1000。
+Bash
+sudo chown -R 1000:1000 /opt/logstash
+6. 重新啟動
+完成上述步驟後，再次執行：
+Bash
+sudo docker compose up -d
+這次 Logstash 應該就能正常啟動了。
+
+放置憑證
+ca.crt
+key.pem
+cert.pem
+要配置 Logstash 的多個 Pipeline，您需要在容器內的路徑 /usr/share/logstash/config/pipelines.yml 中放置這個 YAML 檔案。
+Logstash 預設會檢查這個路徑來獲取 Pipeline 列表。
+
+1. pipelines.yml 的存放路徑
+您提供的配置內容必須放在 Logstash 容器內 /usr/share/logstash/config/pipelines.yml 這個檔案中。
+配置內容：
+YAML
+- pipeline.id: pipeline
+  path.config: "/usr/share/logstash/pipeline/logstash_docker.conf"
+  pipeline.workers: 2
+  pipeline.batch.size: 10000
+  pipeline.batch.delay: 500
+⚠️ 請注意： 您提供的配置內容是一個 YAML 列表 (list)，所以檔案必須以 [ 開頭或直接以 - 開頭。
+
+2. docker-compose.yml 修改建議
+為了讓您在宿主機編輯的檔案能被 Logstash 容器讀取，您需要在 logstash 服務的 volumes 區塊中新增一個掛載點。
+假設您在宿主機將這個檔案放在：/opt/logstash/conf/pipelines.yml
+Logstash 服務修改
+請將您的 docker-compose.yml 中 logstash 服務的 volumes 區塊修改如下：
+YAML
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.12.0
+    container_name: ${cHostname}-logstash
+    ports:
+      - "5044:5044"
+      - "5000:5000"
+      - "9600:9600"
+    environment:
+      LS_JAVA_OPTS: "-Xmx512m -Xms512m"
+    volumes:
+      # 1. 確保 logstash.yml 仍然存在且正確
+      - /opt/logstash/conf/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      
+      # 2. ★★★ 新增：掛載 pipelines.yml ★★★
+      - /opt/logstash/conf/pipelines.yml:/usr/share/logstash/config/pipelines.yml:ro
+      
+      # 3. 確保 Logstash 程式碼能找到設定檔
+      # 確保 logstash_docker.conf 在宿主機的 /opt/logstash/pipeline/ 路徑下
+      - /opt/logstash/pipeline:/usr/share/logstash/pipeline:ro
+      
+      # 4. 修正：Logstash 也統一掛載 ssl 資料夾
+      - /opt/elasticsearch/ssl:/usr/share/logstash/config/certs:ro
+    restart: always
+    depends_on:
+      - es01
+額外前置步驟 (重要)
+在您啟動容器之前，請在宿主機上執行以下操作：
+建立 pipelines.yml 檔案並寫入內容：
+Bash
+
+sudo nano /opt/logstash/conf/pipelines.yml
+# 貼上您提供的配置內容（含開頭的 - 號）
+
+
+建立 logstash_docker.conf 檔案： 您的 pipelines.yml 指向了 /usr/share/logstash/pipeline/logstash_docker.conf，因此您必須在宿主機的對應路徑 /opt/logstash/pipeline/ 內建立這個實際的配置檔案。
+Bash
+
+sudo nano /opt/logstash/pipeline/logstash_docker.conf
+# 在此檔案中定義您的 Input, Filter, Output
+
+
+修正權限： 確保 Logstash 容器 (UID 1000) 能讀取這些新的檔案。
+Bash
+
+sudo chown 1000:1000 /opt/logstash/conf/pipelines.yml
+sudo chown 1000:1000 /opt/logstash/pipeline/logstash_docker.conf
+
+
+完成以上修改後，執行 sudo docker compose up -d 即可。
+2. logstash.yml 內容修改建議
+您提供的配置內容是有效的，但它與您目前在 docker-compose.yml 中使用的環境變數（例如 LS_JAVA_OPTS）和安全設定是分開的。
+為了確保您的安全監控功能正常，建議在 /opt/logstash/conf/logstash.yml 檔案中包含以下內容：
+YAML
+# ----------------------------------------------------
+# 這是您提供的基礎網路配置
+# ----------------------------------------------------
+http.host: "0.0.0.0"
+
+# ----------------------------------------------------
+# X-Pack Security / Monitoring 監控設定 (重要)
+# ----------------------------------------------------
+# 啟用 Logstash 自我監控功能
+xpack.monitoring.enabled: true
+xpack.monitoring.elasticsearch.hosts: [ "https://es01:9200" ]
+xpack.monitoring.elasticsearch.username: "elastic"
+xpack.monitoring.elasticsearch.password: "1qw2!QW@"
+xpack.monitoring.elasticsearch.ssl.certificate_authority: "/usr/share/logstash/config/certs/ca.crt"
+xpack.monitoring.elasticsearch.ssl.verification_mode: none
+
+配合單位需求放置conf
+配置檔案,宿主機 (Host) 建議路徑,容器內 (Container) 目標路徑
+logstash.yml (Logstash 主配置),/opt/logstash/conf/logstash.yml,/usr/share/logstash/config/logstash.yml
+pipelines.yml (Pipeline 列表),/opt/logstash/conf/pipelines.yml,/usr/share/logstash/config/pipelines.yml
+logstash_docker.conf (Pipeline 內容),/opt/logstash/pipeline/logstash_docker.conf,/usr/share/logstash/pipeline/logstash_docker.conf
+logstash_window.conf (Pipeline 內容),/opt/logstash/pipeline/logstash_window.conf,/usr/share/logstash/pipeline/logstash_window.conf
+
+
+
+volumes:
+      # 1. logstash.yml (主配置)
+      - /opt/logstash/conf/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      
+      # 2. pipelines.yml (Pipeline 列表) <-- 您需要在您的 yml 中新增這一條
+      - /opt/logstash/conf/pipelines.yml:/usr/share/logstash/config/pipelines.yml:ro
+      
+      # 3. 存放所有 .conf 檔案的目錄
+      - /opt/logstash/pipeline:/usr/share/logstash/pipeline:ro
+      
+      # 4. 憑證目錄 (已存在，用於 SSL)
+      - /opt/elasticsearch/ssl:/usr/share/logstash/config/certs:ro
+
+
+確認Docker啟用狀態：sudo docker ps -a
+啟用Docker：sudo docker compose up -d
+檢查docker：sudo docker logs 1d(ID開頭)
+關閉Docker：sudo docker compose down
