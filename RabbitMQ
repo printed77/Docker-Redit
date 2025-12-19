@@ -1,0 +1,214 @@
+一、安裝Docker 和 Docker Compose 的環境、安裝yum-utils 套件管理工具
+新增編輯腳本測試能否正常運行(cd /home/bradlin) ：sudo vi abc.sh
+執行安裝 ：sudo bash abc.sh
+安裝腳本(Ubuntu版)：
+# 安裝必要工具
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg
+
+# 新增 Docker GPG 金鑰
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+# 新增 Docker APT 套件來源
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# 安裝 Docker 套件
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# 設定 Docker log rotation
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json > /dev/null <<EOF
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "5"
+  }
+}
+EOF
+
+# 重新載入並啟動 Docker
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+sudo systemctl enable
+二、變更名稱(cd /opt/sre_tools/路徑底下)
+cd /opt/
+sudo mkdir sre_tools
+cd /opt/sre_tools/
+查詢名稱：hostname
+變更名稱：sudo vi .env
+cHostname=""
+三、自動新增資料夾：sudo mkdir -p /opt/rabbitmq/data
+(cat /opt/rabbitmq/data)
+四、產生一組 Erlang Cookie，並存為 .erlang.cookie
+在此路徑：cd /opt/rabbitmq/data/
+這個命令會以 root 權限將 Cookie 內容寫入目標路徑：
+COOKIE_CONTENT="debdcd304973688eb58d6c56489526d3"
+COOKIE_PATH="/opt/rabbitmq/data/.erlang.cookie"
+# 執行寫入動作
+sudo echo -n "${COOKIE_CONTENT}" | sudo tee "${COOKIE_PATH}" > /dev/null
+
+指令：ls -alh 查看
+存放路徑：/opt/rabbitmq/data/.erlang.cookie
+# 產生 32 字元隨機字串 
+指令：openssl rand -hex 16
+debdcd304973688eb58d6c56489526d3
+
+
+五、執行 prepare-rabbitmq.sh
+在此路徑：cd ~
+sudo vi prepare-rabbitmq.sh
+
+#!/bin/bash
+# prepare-rabbitmq.sh - 在三台 VM 上執行
+
+set -euo pipefail
+
+ERLANG_COOKIE_SOURCE="${ERLANG_COOKIE:-@.erlang.cookie}"
+RABBITMQ_DATA_DIR="/opt/rabbitmq/data"
+
+# 1. 建立目錄
+sudo mkdir -p ${RABBITMQ_DATA_DIR}
+
+# 2. 解析 ERLANG_COOKIE 來源（支援 @file 或直接值）
+if [[ "${ERLANG_COOKIE_SOURCE}" == @* ]]; then
+  COOKIE_FILE="${ERLANG_COOKIE_SOURCE#@}"
+  if [[ ! -f "${COOKIE_FILE}" ]]; then
+    echo "Cookie source file not found: ${COOKIE_FILE}" >&2
+    exit 1
+  fi
+  # 移除換行，確保內容正確
+  ERLANG_COOKIE_VALUE="$(tr -d '\r\n' < "${COOKIE_FILE}")"
+else
+  ERLANG_COOKIE_VALUE="${ERLANG_COOKIE_SOURCE}"
+fi
+
+# 3. 寫入 .erlang.cookie
+printf '%s' "${ERLANG_COOKIE_VALUE}" | sudo tee ${RABBITMQ_DATA_DIR}/.erlang.cookie > /dev/null
+
+# 4. 設定權限（關鍵步驟）
+sudo chmod 400 ${RABBITMQ_DATA_DIR}/.erlang.cookie
+sudo chown 999:999 ${RABBITMQ_DATA_DIR}/.erlang.cookie
+
+# 5. 驗證
+echo "Cookie file created:"
+sudo ls -la ${RABBITMQ_DATA_DIR}/.erlang.cookie
+
+六、執行以下指令
+1.sudo chmod +x prepare-rabbitmq.sh
+2.sudo ./prepare-rabbitmq.sh
+
+3.# 使用 ERLANG_COOKIE 環境變數傳遞值
+sudo ERLANG_COOKIE="debdcd304973688eb58d6c56489526d3" ./prepare-rabbitmq.sh
+
+
+七、設置docker-compose.yml(cd /opt/sre_tools/)
+cd /opt/sre_tools/
+sudo vi docker-compose.yml 安裝套件如下：
+services:
+  rabbitmq:
+    image: rabbitmq:4.1.3-management
+    restart: always
+    container_name: ${cHostname}-rabbitmq
+    
+    # 保持 hostname 一致性
+    hostname: ${cHostname}-rabbitmq
+    
+    ports:
+      # 關鍵端口必須保留
+      - "4369:4369"
+      - "5672:5672"
+      - "15672:15672"
+      - "25672:25672"
+      - "15692:15692"
+      
+    volumes:
+      # 確保配置和資料持久化
+      - /opt/rabbitmq/data:/var/lib/rabbitmq/
+      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf
+      
+    environment:
+      # 預設使用者和密碼
+      - RABBITMQ_DEFAULT_USER=admin
+      - RABBITMQ_DEFAULT_PASS=5GzS4G3Sm8TlvZ52
+      
+      # 💥 關鍵修正 1：顯式設定 Short Node Name
+      # 這是 Erlang 節點名稱，用於叢集，格式為 rabbit@hostname
+      - RABBITMQ_NODENAME=rabbit@${cHostname}-rabbitmq 
+      
+      # 💥 關鍵修正 2：強制使用 Shortname 模式 (可選，但推薦)
+      - RABBITMQ_USE_LONGNAME=false
+      
+    logging:
+      driver: "gcplogs"
+      
+    deploy:
+      resources:
+        limits:
+          cpus: '6.0'
+          memory: 14G
+
+
+八、RabbitMQ 記憶體上限 (vm_memory_high_watermark)
+路徑底下：cd /opt/sre_tools/
+sudo vi rabbitmq.conf
+# Enable flow control when memory usage reaches 10 GB
+vm_memory_high_watermark.absolute = 10GB
+
+九、啟動Docker
+cd /opt/sre_tools
+
+sudo docker compose up -d
+sudo docker ps
+sudo docker compose down
+
+
+十、每台設定設定 /etc/hosts
+cd /etc/
+sudo vi hosts
+
+# RabbitMQ Cluster Nodes
+10.140.0.76 rabbitmq-backend01-wddev-rabbitmq 
+10.140.0.77 rabbitmq-backend02-wddev-rabbitmq 
+10.140.0.78 rabbitmq-backend03-wddev-rabbitmq
+
+十一、
+# 在 Node 2 (10.140.0.77) 主機上執行
+
+# 1. 確保應用程式停止
+sudo docker exec rabbitmq-backend02-wddev-rabbitmq rabbitmqctl stop_app
+
+# 2. 加入 Node 1 叢集 (這次應該能成功連線)
+sudo docker exec rabbitmq-backend02-wddev-rabbitmq rabbitmqctl join_cluster rabbit@rabbitmq-backend01-wddev-rabbitmq
+
+# 3. 啟動應用程式
+sudo docker exec rabbitmq-backend02-wddev-rabbitmq rabbitmqctl start_app
+
+# 在 Node 3 (10.140.0.78) 主機上執行！
+
+# 容器名稱：rabbitmq-backend03-wddev-rabbitmq
+
+# 1. 停止 RabbitMQ 應用程式
+sudo docker exec rabbitmq-backend03-wddev-rabbitmq rabbitmqctl stop_app
+
+# 2. 加入 Node 1 叢集 (使用 Node 1 的完整節點名稱)
+sudo docker exec rabbitmq-backend03-wddev-rabbitmq rabbitmqctl join_cluster rabbit@rabbitmq-backend01-wddev-rabbitmq
+
+# 3. 啟動應用程式
+sudo docker exec rabbitmq-backend03-wddev-rabbitmq rabbitmqctl start_app
+
+步驟 2: 驗證最終三節點叢集狀態
+在執行完畢後，請切換到 Node 1 (10.140.0.76) 主機上執行最終的驗證：
+
+# 在 Node 1 (10.140.0.76) 主機上執行
+sudo docker exec rabbitmq-backend01-wddev-rabbitmq rabbitmqctl cluster_status
+
+
+
+
